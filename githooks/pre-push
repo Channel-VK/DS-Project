@@ -1,0 +1,11 @@
+#!/bin/sh
+echo "Running build check before push..."
+mkdir -p build && cd build
+cmake .. > /dev/null 2>&1
+cmake --build . > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo "ERROR: Build failed. Fix it before pushing."
+  exit 1
+fi
+cd ..
+echo "Build OK, proceeding with push."

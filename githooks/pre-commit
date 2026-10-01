@@ -1,0 +1,6 @@
+#!/bin/sh
+if git diff --cached --name-only | grep -q "lib/cJSON"; then
+  echo "ERROR: You're trying to commit changes to lib/cJSON.h or cJSON.c."
+  echo "This is a shared library - do not edit it. Ask the Coordinator."
+  exit 1
+fi
