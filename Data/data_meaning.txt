@@ -1,28 +1,273 @@
-Requests:
-id - each request should be assigned a unique id, last number generated + R
-pickup, destination - nodes fro and to
-passengers - no of people who have requested
-urgency - a score kinda thing which we will calculate by our algorithm
-request_time - time elapsed since request was made (should be minimal to optimize)
+===================================================================
+CAMPUS BUGGY DISPATCH - WHAT EACH FIELD MEANS 
+===================================================================
+
+This explains what each field in JSON data actually means,
+in plain language, with examples. Read this before coding.
 
 
+===================================================================
+1. REQUESTS BLOCK
+===================================================================
 
-Result Block: 
-(which can be used to evaluate entire performance of dispatch system at a time)
-algorithm, routing - fixing on greedy and djikstra for now
-total_requests, served and unserved - just a count
-avg_wait_time_s - avg calculated from all requests...should be minimal to optimize
-avg_buggy_utlization_pct - average percentage of time buggies spent in transporting actively
-and remaining idle(unutilized) time otherwise...should be max to optimize
-(We'll try different algorithms and routing technologies and see for which one the latter 2 is
-optmized max)
-Then request results with assigned buggy id and eta, waiting time
+Example:
+{ "id": "R1", "pickup": 1, "destination": 4, "passengers": 2,
+  "urgency": 1, "request_time": 0 }
 
-Config Block - for each request:
-Urgency reflects how important the trip is; aging reflects how long someone's been made 
-to wait, which is a separate, legitimate factor for fairness
- — most real-world scheduling systems (OS process schedulers, ride-hailing dispatch, 
- hospital triage queues) use exactly this two-factor combination for the same reason.
+--------
+id
+--------
+WHAT: A unique name for this request.
+HOW: System auto-generates it. Just keep counting up.
+  First request  -> R1
+  Second request  -> R2
+  Third request  -> R3
+You never type this yourself, the system makes it.
 
-time_step_s — the simulation's "tick" interval, like when system needs to check for requests
-max_simulation_time_s - simulation time of the system...for like 30 mins or something
+--------
+pickup
+--------
+WHAT: Which node (location) the person is waiting at.
+EXAMPLE: pickup = 1 means they're waiting at node 1 (Orion).
+This is just an input, someone tells you where they are.
+
+--------
+destination
+--------
+WHAT: Which node the person wants to go to.
+EXAMPLE: destination = 4 means they want to go to node 4 (Opal).
+Also just an input.
+
+--------
+passengers
+--------
+WHAT: How many people are in this group.
+EXAMPLE: passengers = 2 means 2 people need to fit in the buggy.
+Important because a buggy can only take requests up to its capacity.
+  Buggy capacity = 6, request has 7 passengers -> CANNOT serve, split
+  it into two trips or reject it.
+
+--------
+urgency
+--------
+WHAT: A number saying how important/urgent this trip is.
+IMPORTANT: This is NOT typed in by the user. Your system is
+supposed to CALCULATE this using some rule (not decided yet).
+
+EXAMPLE OF WHAT COULD DECIDE URGENCY (just an idea, not final):
+  - Heading to health center       -> urgency = 3 (high)
+  - Normal trip, no particular rush -> urgency = 1 (low)
+  - Large group going to an exam   -> urgency = 2 (medium)
+
+Right now, while you don't have that calculation built yet, you can
+just manually type a number (1, 2, 3) as a placeholder for testing.
+Later, replace that manual number with your real calculation.
+
+--------
+request_time
+--------
+WHAT: The exact moment (in simulation seconds) the request was made.
+EXAMPLE: request_time = 30 means "this request came in at the
+30-second mark of the simulation", like a timestamp on a receipt.
+
+THIS IS NOT something you try to make smaller. It's just a fact -
+WHEN something happened. You don't "optimize" a clock reading.
+
+What you DO want to minimize is how long the person waits AFTER
+this timestamp before a buggy shows up - that's a different field,
+called wait_time_s, explained below in the Results section.
+
+THINK OF IT LIKE THIS:
+  request_time = 30   -->  "Order placed at 12:30 PM"
+  wait_time_s  = 40   -->  "Food arrived 40 minutes after that"
+You want wait_time_s to be small. request_time is just a label for
+when the order was placed, it doesn't go up or down, it just IS.
+
+
+===================================================================
+2. RESULTS BLOCK
+===================================================================
+
+Example:
+{
+  "summary": {
+    "algorithm": "greedy",
+    "routing": "dijkstra",
+    "total_requests": 3,
+    "served": 3,
+    "unserved": 0,
+    "avg_wait_time_s": 62.3,
+    "avg_buggy_utilization_pct": 71.5
+  },
+  "per_request": [
+    { "id": "R1", "assigned_buggy": "BG1", "wait_time_s": 40, "eta_s": 90 }
+  ]
+}
+
+This block is your REPORT CARD after running a simulation. It tells
+you how well the dispatch system performed.
+
+--------
+algorithm / routing
+--------
+WHAT: Which strategy was used for this run.
+EXAMPLE: algorithm = "greedy", routing = "dijkstra"
+These are fixed for now. Later, you might try different strategies
+and compare which gives better results using the fields below.
+
+--------
+total_requests
+--------
+WHAT: How many requests came in total during this run.
+EXAMPLE: total_requests = 3 (R1, R2, R3)
+Just a count, nothing to optimize.
+
+--------
+served / unserved
+--------
+WHAT: How many requests got a buggy (served) vs never got one
+(unserved) before the simulation ended.
+EXAMPLE: served = 3, unserved = 0
+WANT: served as HIGH as possible, unserved as LOW as possible
+(ideally unserved = 0, meaning everyone got picked up).
+
+--------
+avg_wait_time_s
+--------
+WHAT: On average, how long did people wait (from request_time until
+a buggy actually arrived)?
+EXAMPLE: avg_wait_time_s = 62.3 means people waited about 62 seconds
+on average.
+WANT: As LOW as possible. Shorter wait = happier passengers.
+
+--------
+avg_buggy_utilization_pct
+--------
+WHAT: Out of the total simulation time, what percentage of that time
+were buggies actually busy carrying passengers (vs. sitting idle)?
+EXAMPLE: avg_buggy_utilization_pct = 71.5 means buggies were "working"
+71.5% of the time, and idle 28.5% of the time.
+WANT: As HIGH as possible. You paid for the buggies, you want them
+actually being used, not parked doing nothing.
+
+--------
+per_request list
+--------
+This breaks the summary down request-by-request.
+
+  id             -> which request this is (matches the Requests block)
+  assigned_buggy -> which buggy was sent (e.g. "BG1")
+  wait_time_s    -> how long THIS SPECIFIC person waited
+  eta_s          -> estimated time for the buggy to reach them
+                     (make sure everyone agrees: is this "time until
+                     pickup" or "time until drop-off"? decide this
+                     and write it down so there's no confusion later)
+
+
+===================================================================
+3. CONFIG BLOCK
+===================================================================
+
+Example:
+{
+  "algorithm": "greedy",
+  "routing": "dijkstra",
+  "aging_weight": 0.5,
+  "urgency_weight": 1.0,
+  "time_step_s": 10,
+  "max_simulation_time_s": 1800,
+  "output_format": "csv"
+}
+
+This block is the SETTINGS PANEL for a simulation run - you change
+these numbers before running to test different behavior.
+
+--------
+urgency_weight and aging_weight
+--------
+WHAT: These two numbers decide how "important" a request is when
+deciding who gets a buggy first.
+
+  priority_score = (urgency_weight x urgency) + (aging_weight x time_waited)
+
+urgency_weight  -> how much the TYPE of trip matters (is it urgent?)
+aging_weight    -> how much WAITING TIME matters (fairness, so
+                   nobody gets ignored forever)
+                   
+We have to create a balance between these weights so that urgent requests get served asap
+but waiting time also doesn't become way too much.
+
+EXAMPLE TO MAKE IT CLICK:
+Imagine 2 requests competing for the same buggy:
+
+  Request A: urgency = 3 (urgent), just arrived, time_waited = 0
+  Request B: urgency = 1 (normal), has been waiting 100 seconds
+
+  With urgency_weight = 1.0, aging_weight = 0.5:
+    Score A = (1.0 x 3) + (0.5 x 0)   = 3.0
+    Score B = (1.0 x 1) + (0.5 x 100) = 51.0
+
+  Request B wins! Even though it's "less urgent", it's been waiting
+  so long that fairness kicks in and it gets priority. This stops
+  low-urgency requests from NEVER getting served just because urgent
+  ones keep cutting in line.
+
+This is the same idea used in:
+  - Computer operating systems (deciding which program runs next)
+  - Ride-hailing apps (deciding which ride request to match first)
+  - Hospital ERs (triage: urgent cases first, but you can't make
+    someone wait forever just because new urgent cases keep arriving)
+
+--------
+time_step_s
+--------
+WHAT: How often (in seconds) the system "checks in" during the
+simulation - sees if new requests came in, if any buggy has arrived
+somewhere, and re-decides assignments.
+
+EXAMPLE: time_step_s = 10 means the system pauses and checks
+everything every 10 seconds, like a clock ticking: 0s, 10s, 20s,
+30s... and so on.
+
+Think of it like a video game running in "turns" instead of smooth
+real-time motion - every 10 seconds is one "turn".
+
+--------
+max_simulation_time_s
+--------
+WHAT: How long (in seconds) the whole simulation runs before it
+automatically stops.
+
+EXAMPLE: max_simulation_time_s = 1800 means the simulation runs for
+1800 seconds, which is 30 minutes, and then stops - even if some
+requests are still waiting (those would count as "unserved").
+
+--------
+output_format
+--------
+WHAT: What file format to save the final results in.
+EXAMPLE: output_format = "csv" means save as a CSV file (like an
+Excel spreadsheet you could open). Could also be "json" if you
+want to keep everything as JSON instead.
+
+
+===================================================================
+QUICK SUMMARY TABLE
+===================================================================
+
+FIELD                        | WHO SETS IT   | WANT IT...
+------------------------------|---------------|------------------
+id (request)                  | auto-generated| n/a
+pickup / destination          | input         | n/a
+passengers                    | input         | n/a
+urgency                       | calculated    | n/a (feeds formula)
+request_time                  | input/system  | n/a (just a timestamp)
+served / unserved             | output        | served high, unserved low
+avg_wait_time_s                | output        | AS LOW AS POSSIBLE
+avg_buggy_utilization_pct      | output        | AS HIGH AS POSSIBLE
+wait_time_s (per request)      | output        | AS LOW AS POSSIBLE
+urgency_weight / aging_weight  | config input  | tune to balance fairness
+time_step_s                    | config input  | smaller = more precise,
+                                |               | slower to run
+max_simulation_time_s          | config input  | however long you want
+                                |               | the test to run

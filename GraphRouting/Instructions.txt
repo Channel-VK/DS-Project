@@ -1,0 +1,158 @@
+===================================================================
+INSTRUCTIONS - GRAPH & ROUTING MODULE
+===================================================================
+
+YOUR JOB IN ONE LINE:
+Read the campus map (nodes + edges) and answer the question
+"what's the shortest path from location X to location Y, and how
+far/long is it?" Nothing else. You don't touch buggies, requests,
+or dispatch logic at all.
+
+
+===================================================================
+1. FILES YOU WILL USE (already in Data/ folder)
+===================================================================
+
+  campus_nodes.json   - list of campus locations (id, name, lat, lon)
+  campus_edges.json   - list of paths between locations (from, to,
+                         distance_m, avg_time_s, bidirectional)
+
+You do NOT need campus_buggies.json, requests.json, or
+simulation_config.json. Those are not your concern.
+
+
+===================================================================
+2. WHAT YOU NEED TO BUILD
+===================================================================
+
+Two main pieces:
+
+  (a) A function that LOADS the graph from the two JSON files into
+      memory, as a structure you can search through fast.
+
+  (b) A function that runs DIJKSTRA'S ALGORITHM to find the shortest
+      path between any two node IDs.
+
+
+===================================================================
+3. THE EXACT STRUCTS YOU MUST USE (do not rename fields)
+===================================================================
+
+typedef struct {
+    int id;
+    char name[64];
+    double lat, lon;
+} Node;
+
+typedef struct {
+    int from, to;
+    int distance_m;
+    int avg_time_s;
+    int bidirectional;   // 1 = true, 0 = false
+} Edge;
+
+typedef struct {
+    Node* nodes;
+    int node_count;
+    Edge* edges;
+    int edge_count;
+} Graph;
+
+typedef struct {
+    int path_node_ids[64];  // sequence of node ids from source to dest
+    int path_length;
+    int total_distance_m;
+    int total_time_s;
+} Route;
+
+
+===================================================================
+4. THE EXACT FUNCTIONS YOU MUST WRITE
+===================================================================
+
+Graph* load_graph(const char* nodes_path, const char* edges_path);
+  - Reads both JSON files, fills a Graph struct, returns a pointer
+    to it.
+
+Route* dijkstra(Graph* g, int from_id, int to_id);
+  - Runs Dijkstra's shortest path algorithm starting at from_id,
+    ending at to_id.
+  - Returns a Route struct with the path, total distance, and
+    total time.
+  - IMPORTANT: check the "bidirectional" field on each edge.
+      If bidirectional = 1 (true)  -> you can travel BOTH ways
+                                       (from->to AND to->from)
+      If bidirectional = 0 (false) -> you can ONLY travel from->to
+    This matters because the shortest path might be invalid if you
+    ignore this rule.
+
+void free_graph(Graph* g);
+void free_route(Route* r);
+  - Simple cleanup functions, free any memory you allocated.
+
+These exact function names and return types matter - the other
+coder will call these functions directly, so if you
+change the name or the struct shape, their code will break.
+
+
+===================================================================
+5. HOW TO TEST YOUR WORK ON YOUR OWN (without needing Person B)
+===================================================================
+
+Write a small main.c or test file that does this:
+
+  1. Load the graph:
+       Graph* g = load_graph("campus_nodes.json", "campus_edges.json");
+
+  2. Try finding a path between two nodes you know, e.g. node 1
+     (Orion) to node 4 (Opal):
+       Route* r = dijkstra(g, 1, 4);
+
+  3. Print the result:
+       printf("Distance: %d m, Time: %d s\n", r->total_distance_m,
+              r->total_time_s);
+       for (int i = 0; i < r->path_length; i++) {
+           printf("%d ", r->path_node_ids[i]);
+       }
+
+  4. Check it by hand - does the path make sense? Does the distance
+     look roughly right compared to the campus_edges.json data?
+
+Test at least 3-4 different from/to pairs, including:
+  - Two nodes that are directly connected by one edge (easy check)
+  - Two nodes far apart that need multiple hops
+  - A case where you KNOW there should be no direct edge, to make
+    sure your algorithm actually searches properly instead of just
+    finding adjacent nodes
+
+
+===================================================================
+6. WHAT "DONE" LOOKS LIKE
+===================================================================
+
+[ ] load_graph() correctly loads all 22 nodes and all edges
+[ ] dijkstra() gives correct shortest path for simple test cases
+    you've manually verified
+[ ] bidirectional = false edges only work in ONE direction (test
+    this specifically if the Coordinator points out any one-way
+    edges, otherwise all current edges are bidirectional = true so
+    this might not be testable yet - that's fine)
+[ ] Code compiles clean with no warnings
+[ ] You've written a short note (a few sentences) explaining your
+    approach, for the Coordinator to use in the report
+
+
+===================================================================
+7. WHAT YOU SHOULD NOT DO
+===================================================================
+
+- Do NOT write any code that touches buggies, requests, or urgency
+- Do NOT change the struct field names/types without telling both
+  other teammates first
+- Do NOT worry about the simulation loop, the output file, or the
+  config - that's the Coordinator's job
+- Do NOT hardcode node coordinates or distances in your code -
+  always read them from the JSON files
+
+
+===================================================================
