@@ -1,0 +1,9 @@
+{
+  "algorithm": "greedy",
+  "routing": "dijkstra",
+  "aging_weight": 0.5,
+  "urgency_weight": 1.0,
+  "time_step_s": 10,
+  "max_simulation_time_s": 1800,
+  "output_format": "csv"
+}

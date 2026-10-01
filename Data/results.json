@@ -1,0 +1,14 @@
+{
+  "summary": {
+    "algorithm": "greedy",
+    "routing": "dijkstra",
+    "total_requests": 3,
+    "served": 3,
+    "unserved": 0,
+    "avg_wait_time_s": 62.3,
+    "avg_buggy_utilization_pct": 71.5
+  },
+  "per_request": [
+    { "id": "R1", "assigned_buggy": "BG1", "wait_time_s": 40, "eta_s": 90 }
+  ]
+}

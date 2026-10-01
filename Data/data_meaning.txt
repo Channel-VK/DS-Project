@@ -1,0 +1,28 @@
+Requests:
+id - each request should be assigned a unique id, last number generated + R
+pickup, destination - nodes fro and to
+passengers - no of people who have requested
+urgency - a score kinda thing which we will calculate by our algorithm
+request_time - time elapsed since request was made (should be minimal to optimize)
+
+
+
+Result Block: 
+(which can be used to evaluate entire performance of dispatch system at a time)
+algorithm, routing - fixing on greedy and djikstra for now
+total_requests, served and unserved - just a count
+avg_wait_time_s - avg calculated from all requests...should be minimal to optimize
+avg_buggy_utlization_pct - average percentage of time buggies spent in transporting actively
+and remaining idle(unutilized) time otherwise...should be max to optimize
+(We'll try different algorithms and routing technologies and see for which one the latter 2 is
+optmized max)
+Then request results with assigned buggy id and eta, waiting time
+
+Config Block - for each request:
+Urgency reflects how important the trip is; aging reflects how long someone's been made 
+to wait, which is a separate, legitimate factor for fairness
+ — most real-world scheduling systems (OS process schedulers, ride-hailing dispatch, 
+ hospital triage queues) use exactly this two-factor combination for the same reason.
+
+time_step_s — the simulation's "tick" interval, like when system needs to check for requests
+max_simulation_time_s - simulation time of the system...for like 30 mins or something

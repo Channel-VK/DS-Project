@@ -1,0 +1,7 @@
+{
+  "requests": [
+    { "id": "R1", "pickup": 1, "destination": 4, "passengers": 2, "urgency": 1, "request_time": 0 },
+    { "id": "R2", "pickup": 3, "destination": 2, "passengers": 3, "urgency": 2, "request_time": 30 },
+    { "id": "R3", "pickup": 5, "destination": 1, "passengers": 1, "urgency": 1, "request_time": 45 }
+  ]
+}

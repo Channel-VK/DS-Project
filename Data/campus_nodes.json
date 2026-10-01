@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    { "id": 1, "name": "Orion", "lat": 10.7610, "lon": 78.8141 },
+    { "id": 2, "name": "Logos", "lat": 10.7610, "lon": 78.8141 },
+    { "id": 3, "name": "Agate", "lat": 10.7620, "lon": 78.81325 },
+    { "id": 4, "name": "Opal", "lat": 10.7575, "lon": 78.8200 },
+    { "id": 5, "name": "2K Market", "lat": 10.80576, "lon": 78.69473 },
+    { "id": 6, "name": "Temple", "lat": 10.755375, "lon": 78.82025 },
+    { "id": 7, "name": "Central Library", "lat": 10.757125, "lon": 78.818125 },
+    { "id": 8, "name": "OJAS", "lat": 10.761125, "lon": 78.808875 },
+    { "id": 9, "name": "Octagon", "lat": 10.7610, "lon": 78.8141 },
+    { "id": 10, "name": "Architecture Dept.", "lat": 10.760125, "lon": 78.809875 },
+    { "id": 11, "name": "Chemical Engineering Dept.", "lat": 10.7600, "lon": 78.8100 },
+    { "id": 12, "name": "Chemistry Dept.", "lat": 10.7610, "lon": 78.808375 },
+    { "id": 13, "name": "Civil Engineering Dept.", "lat": 10.7605, "lon": 78.8115 },
+    { "id": 14, "name": "CSE Dept.", "lat": 10.7600, "lon": 78.8175 },
+    { "id": 15, "name": "EEE Dept.", "lat": 10.758875, "lon": 78.814625 },
+    { "id": 16, "name": "ECE Dept.", "lat": 10.760625, "lon": 78.816875 },
+    { "id": 17, "name": "ICE Dept.", "lat": 10.760625, "lon": 78.8180 },
+    { "id": 18, "name": "Management Studies Dept.", "lat": 10.761375, "lon": 78.81675 },
+    { "id": 19, "name": "Mechanical Engineering Dept.", "lat": 10.759375, "lon": 78.8155 },
+    { "id": 20, "name": "MME Dept.", "lat": 10.758875, "lon": 78.816125 },
+    { "id": 21, "name": "Physics Dept.", "lat": 10.7605, "lon": 78.8085 },
+    { "id": 22, "name": "Production Engineering Dept.", "lat": 10.761125, "lon": 78.8160 }
+  ]
+}
