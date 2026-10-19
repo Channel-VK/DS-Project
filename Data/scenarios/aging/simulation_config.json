@@ -1,0 +1,9 @@
+{
+  "algorithm": "greedy",
+  "routing": "dijkstra",
+  "output_format": "json",
+  "urgency_weight": 1.0,
+  "aging_weight": 0.5,
+  "time_step_s": 10,
+  "max_simulation_time_s": 1800
+}

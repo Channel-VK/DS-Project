@@ -1,0 +1,16 @@
+
+# Build artifacts
+build/
+
+# Temporary config backup
+Data/config_backup.json
+
+# Generated simulation outputs
+Data/results.csv
+Data/baseline_results.csv
+Data/greedy_results.csv
+Data/scenarios/*/results.csv
+Data/scenarios/*/results.json
+
+# Local evidence
+evidence/

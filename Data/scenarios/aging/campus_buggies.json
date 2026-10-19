@@ -1,0 +1,11 @@
+{
+  "buggies": [
+    {
+      "id": "AGE1",
+      "capacity": 6,
+      "current_location": 1,
+      "status": "AVAILABLE",
+      "speed_mps": 5.5
+    }
+  ]
+}

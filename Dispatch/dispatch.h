@@ -41,10 +41,13 @@ void free_requests(Request* requests);
 double compute_priority(Request* r, double urgency_weight,
                          double aging_weight, int current_time);
 
-AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
-                                    Request* pending, int pending_count,
-                                    Graph* g, int current_time,
-                                    double urgency_weight,
-                                    double aging_weight);
+AssignmentResult run_dispatch_tick(
+    Buggy* fleet, int fleet_count,
+    Request* pending, int pending_count,
+    Graph* g, int current_time,
+    double urgency_weight, double aging_weight,
+    int max_simulation_time,
+    const char* algorithm
+);
 
 #endif /* DISPATCH_H */

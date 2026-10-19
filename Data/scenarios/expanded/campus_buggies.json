@@ -1,0 +1,60 @@
+{
+  "buggies": [
+    {
+      "id": "BG1",
+      "capacity": 6,
+      "current_location": 1,
+      "status": "AVAILABLE",
+      "speed_mps": 5.5
+    },
+    {
+      "id": "BG2",
+      "capacity": 6,
+      "current_location": 3,
+      "status": "AVAILABLE",
+      "speed_mps": 5.5
+    },
+    {
+      "id": "BG3",
+      "capacity": 4,
+      "current_location": 5,
+      "status": "NOT_AVAILABLE",
+      "speed_mps": 5.0
+    },
+    {
+      "id": "BG4",
+      "capacity": 6,
+      "current_location": 9,
+      "status": "AVAILABLE",
+      "speed_mps": 5.5
+    },
+    {
+      "id": "BG5",
+      "capacity": 4,
+      "current_location": 18,
+      "status": "NOT_AVAILABLE",
+      "speed_mps": 5.0
+    },
+    {
+      "id": "BG6",
+      "capacity": 6,
+      "current_location": 1,
+      "status": "AVAILABLE",
+      "speed_mps": 5.5
+    },
+    {
+      "id": "BG7",
+      "capacity": 4,
+      "current_location": 12,
+      "status": "AVAILABLE",
+      "speed_mps": 5.0
+    },
+    {
+      "id": "BG8",
+      "capacity": 6,
+      "current_location": 22,
+      "status": "AVAILABLE",
+      "speed_mps": 5.5
+    }
+  ]
+}

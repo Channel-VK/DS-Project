@@ -1,5 +1,5 @@
 {
-  "algorithm": "greedy",
+  "algorithm": "shortest",
   "routing": "dijkstra",
   "aging_weight": 0.5,
   "urgency_weight": 1.0,
