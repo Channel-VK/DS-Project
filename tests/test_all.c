@@ -108,6 +108,34 @@ static void test_capacity_constraint(Graph *graph) {
     printf("[PASS] Capacity constraint\n");
 }
 
+static void test_regret_dispatch(Graph *graph) {
+    Buggy g_fleet[2] = {
+        { "BG1", 6, 2, STATUS_AVAILABLE, 5.5 },
+        { "BG2", 6, 16, STATUS_AVAILABLE, 5.5 }
+    };
+    Request g_reqs[2] = {
+        { "R1", 9, 18, 1, 5, 0, 0 },
+        { "R2", 2, 1, 1, 1, 0, 0 }
+    };
+    Buggy r_fleet[2];
+    Request r_reqs[2];
+    memcpy(r_fleet, g_fleet, sizeof(g_fleet));
+    memcpy(r_reqs, g_reqs, sizeof(g_reqs));
+
+    AssignmentResult g1 = run_dispatch_tick(g_fleet, 2, g_reqs, 2, graph, 0, 1.0, 0.5, 1800, "greedy");
+    AssignmentResult g2 = run_dispatch_tick(g_fleet, 2, g_reqs, 2, graph, 0, 1.0, 0.5, 1800, "greedy");
+    AssignmentResult r1 = run_dispatch_tick(r_fleet, 2, r_reqs, 2, graph, 0, 1.0, 0.5, 1800, "regret");
+    AssignmentResult r2 = run_dispatch_tick(r_fleet, 2, r_reqs, 2, graph, 0, 1.0, 0.5, 1800, "regret");
+
+    assert(g1.success == 1 && g2.success == 1);
+    assert(r1.success == 1 && r2.success == 1);
+    assert(strcmp(g1.request_id, "R1") == 0 && strcmp(g1.assigned_buggy, "BG1") == 0);
+    assert(strcmp(r1.request_id, "R2") == 0 && strcmp(r1.assigned_buggy, "BG1") == 0);
+    assert((r1.eta_s + r2.eta_s) < (g1.eta_s + g2.eta_s));
+
+    printf("[PASS] Regret dispatch\n");
+}
+
 int main(void) {
     Graph *graph = load_graph(NODES_PATH, EDGES_PATH);
 
@@ -117,6 +145,7 @@ int main(void) {
     test_graph_routing(graph);
     test_successful_dispatch(graph);
     test_capacity_constraint(graph);
+    test_regret_dispatch(graph);
 
     free_graph(graph);
 

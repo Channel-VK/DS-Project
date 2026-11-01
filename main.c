@@ -177,6 +177,19 @@ static int find_buggy_index(const Buggy *fleet, int fleet_count, const char *id)
     return -1;
 }
 
+static int is_on_route_corridor(const Route *route, int pickup_id, int dropoff_id) {
+    int pickup_idx = -1;
+    if (!route) return 0;
+    for (int i = 0; i < route->path_length; ++i) {
+        if (pickup_idx < 0 && route->path_node_ids[i] == pickup_id) {
+            pickup_idx = i;
+        } else if (pickup_idx >= 0 && route->path_node_ids[i] == dropoff_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     SimulationConfig config;
     Graph *graph = NULL;
@@ -341,7 +354,6 @@ for (int argi = 1; argi < argc; ++argi) {
                 break;
             }
             trip_time = trip_route->total_time_s;
-            free_route(trip_route);
             if (trip_time < 0) trip_time = 0;
 
             total_duration = assignment.eta_s + trip_time;
@@ -374,6 +386,31 @@ for (int argi = 1; argi < argc; ++argi) {
                      sizeof(outcomes[served].assigned_buggy), "%s",
                      assignment.assigned_buggy);
             ++served;
+
+            int remaining_seats = fleet[buggy_index].capacity - requests[request_index].passengers;
+            for (int k = 0; remaining_seats > 0 && k < request_count; ++k) {
+                if (requests[k].assigned || requests[k].request_time > current_time) continue;
+                if (requests[k].passengers > remaining_seats ||
+                    !is_on_route_corridor(trip_route, requests[k].pickup, requests[k].destination))
+                    continue;
+                Route *pickup_k = dijkstra(graph, fleet[buggy_index].current_location, requests[k].pickup);
+                Route *route_k = dijkstra(graph, requests[k].pickup, requests[k].destination);
+                int eta_k = pickup_k ? pickup_k->total_time_s : -1;
+                int trip_k = route_k ? route_k->total_time_s : -1;
+                free_route(pickup_k);
+                free_route(route_k);
+                if (eta_k < 0 || trip_k < 0 || current_time + eta_k + trip_k > config.max_simulation_time_s)
+                    continue;
+                requests[k].assigned = 1;
+                remaining_seats -= requests[k].passengers;
+                outcomes[served].wait_time_s = current_time + eta_k - requests[k].request_time;
+                if (outcomes[served].wait_time_s < 0) outcomes[served].wait_time_s = 0;
+                outcomes[served].eta_s = eta_k;
+                snprintf(outcomes[served].request_id, sizeof(outcomes[served].request_id), "%s", requests[k].id);
+                snprintf(outcomes[served].assigned_buggy, sizeof(outcomes[served].assigned_buggy), "%s", assignment.assigned_buggy);
+                ++served;
+            }
+            free_route(trip_route);
 
             busy_until[buggy_index] = current_time + total_duration;
             destination_after_trip[buggy_index] = requests[request_index].destination;

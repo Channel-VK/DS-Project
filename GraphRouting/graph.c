@@ -167,6 +167,7 @@ if (g->nodes == NULL || (edge_count > 0 && g->edges == NULL)) {
 
 g->node_count = node_count;
 g->edge_count = edge_count;  // till now,I just reserved memory for nodes , edges in graph
+g->adj_list = NULL;
 
 //loading nodes
 for (int i = 0; i < node_count; i++) {
@@ -284,6 +285,29 @@ g->edges[i].bidirectional = cJSON_IsTrue(bidirectional_item) ? 1 : 0 ;
 cJSON_Delete(nodes_root);
 cJSON_Delete(edges_root);
 
+g->adj_list = calloc((size_t)g->node_count, sizeof(AdjNode *));
+if (g->adj_list == NULL) {
+    free_graph(g);
+    return NULL;
+}
+for (int i = g->edge_count - 1; i >= 0; i--) {
+    int u = -1, v = -1;
+    for (int j = 0; j < g->node_count; j++) {
+        if (g->nodes[j].id == g->edges[i].from) u = j;
+        if (g->nodes[j].id == g->edges[i].to) v = j;
+    }
+    AdjNode *node = malloc(sizeof(AdjNode));
+    if (node == NULL) { free_graph(g); return NULL; }
+    *node = (AdjNode){ v, g->edges[i].distance_m, g->edges[i].avg_time_s, g->adj_list[u] };
+    g->adj_list[u] = node;
+    if (g->edges[i].bidirectional) {
+        AdjNode *rev = malloc(sizeof(AdjNode));
+        if (rev == NULL) { free_graph(g); return NULL; }
+        *rev = (AdjNode){ u, g->edges[i].distance_m, g->edges[i].avg_time_s, g->adj_list[v] };
+        g->adj_list[v] = rev;
+    }
+}
+
 return g;
 }
 
@@ -292,7 +316,17 @@ void free_graph(Graph *g)
     if (g == NULL) {
         return;
     }
-
+    if (g->adj_list != NULL) {
+        for (int i = 0; i < g->node_count; i++) {
+            AdjNode *curr = g->adj_list[i];
+            while (curr != NULL) {
+                AdjNode *next = curr->next;
+                free(curr);
+                curr = next;
+            }
+        }
+        free(g->adj_list);
+    }
     free(g->nodes);
     free(g->edges);
     free(g);
@@ -318,9 +352,57 @@ static int find_index(const Graph *g, int node_id)
     return -1;
 }
 
+typedef struct {
+    int vertex;
+    int dist;
+} HeapNode;
+
+typedef struct {
+    HeapNode *data;
+    int size;
+} MinHeap;
+
+static void push_heap(MinHeap *h, int vertex, int dist)
+{
+    int i = h->size++;
+    h->data[i] = (HeapNode){ vertex, dist };
+    while (i > 0) {
+        int p = (i - 1) / 2;
+        if (h->data[p].dist < h->data[i].dist ||
+            (h->data[p].dist == h->data[i].dist && h->data[p].vertex <= h->data[i].vertex))
+            break;
+        HeapNode tmp = h->data[p];
+        h->data[p] = h->data[i];
+        h->data[i] = tmp;
+        i = p;
+    }
+}
+
+static HeapNode pop_heap(MinHeap *h)
+{
+    HeapNode top = h->data[0];
+    h->data[0] = h->data[--h->size];
+    int i = 0;
+    for (;;) {
+        int left = 2 * i + 1, right = 2 * i + 2, smallest = i;
+        if (left < h->size && (h->data[left].dist < h->data[smallest].dist ||
+            (h->data[left].dist == h->data[smallest].dist && h->data[left].vertex < h->data[smallest].vertex)))
+            smallest = left;
+        if (right < h->size && (h->data[right].dist < h->data[smallest].dist ||
+            (h->data[right].dist == h->data[smallest].dist && h->data[right].vertex < h->data[smallest].vertex)))
+            smallest = right;
+        if (smallest == i) break;
+        HeapNode tmp = h->data[i];
+        h->data[i] = h->data[smallest];
+        h->data[smallest] = tmp;
+        i = smallest;
+    }
+    return top;
+}
+
 Route *dijkstra(Graph *g, int from_id, int to_id)
 {
-    if (g == NULL) {
+    if (g == NULL || g->adj_list == NULL) {
         return NULL;
     }
 
@@ -334,11 +416,13 @@ Route *dijkstra(Graph *g, int from_id, int to_id)
     int *dist    = malloc(g->node_count * sizeof(int));
     int *visited = malloc(g->node_count * sizeof(int));
     int *previous = malloc(g->node_count * sizeof(int));
+    MinHeap heap = { malloc((g->edge_count * 2 + g->node_count + 1) * sizeof(HeapNode)), 0 };
 
-    if (dist == NULL || visited == NULL || previous == NULL) {
+    if (dist == NULL || visited == NULL || previous == NULL || heap.data == NULL) {
     free(dist);
     free(visited);
     free(previous);
+    free(heap.data);
     return NULL;
 }
     
@@ -348,46 +432,25 @@ Route *dijkstra(Graph *g, int from_id, int to_id)
     previous[i] = -1;
     }
     dist[source_index] = 0;
+    push_heap(&heap, source_index, 0);
 
-    for (int count = 0; count < g->node_count; count++){
-    int current = -1; // used to find  which unvisited node has less dist
+    while (heap.size > 0) {
+        int current = pop_heap(&heap).vertex;
+        if (visited[current]) continue;
+        visited[current] = 1;
+        if (current == destination_index) break;
 
-    for (int i = 0; i < g->node_count; i++){
-        if (!visited[i] && (current == -1 || dist[i] < dist[current]))
-        {
-            current = i;
+        for (AdjNode *adj = g->adj_list[current]; adj != NULL; adj = adj->next) {
+            int neighbor_index = adj->to_index;
+            int new_distance = dist[current] + adj->distance_m;
+            if (!visited[neighbor_index] && new_distance < dist[neighbor_index]) {
+                dist[neighbor_index] = new_distance;
+                previous[neighbor_index] = current;
+                push_heap(&heap, neighbor_index, new_distance);
+            }
         }
     }
-
-    if (current == -1 || dist[current] == INT_MAX) { //no more unvisted nodes
-        break;
-    }
-
-    visited[current] = 1;
-
-    for (int i = 0; i < g->edge_count; i++){
-    Edge *edge = &g->edges[i];
-
-    int neighbor = -1;
-
-    if (edge->from == g->nodes[current].id){
-    neighbor = edge->to;
-     }
-    else if (edge->bidirectional && edge->to == g->nodes[current].id){
-    neighbor = edge->from;
-     } 
-
-     if (neighbor == -1){
-       continue; }
-
-     int neighbor_index = find_index(g, neighbor);
-     int new_distance = dist[current] + edge->distance_m;
-
-     if (new_distance < dist[neighbor_index]){
-    dist[neighbor_index] = new_distance;
-    previous[neighbor_index] = current;}
-     } 
-    } 
+    free(heap.data); 
      if (dist[destination_index] == INT_MAX){
     free(dist);
     free(visited);

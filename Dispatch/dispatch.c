@@ -119,12 +119,14 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
     double highest_priority = -DBL_MAX;
     int shortest_total_duration = INT_MAX;
     int shortest_mode = (algorithm && strcmp(algorithm, "shortest") == 0);
+    int regret_mode = (algorithm && (strcmp(algorithm, "regret") == 0 ||
+                                     strcmp(algorithm, "smart") == 0));
 
     for (int i = 0; i < pending_count; ++i) {
         Request* request = &pending[i];
         if (request->assigned || request->request_time > current_time) continue;
 
-        int nearest_buggy_idx = -1, nearest_eta = INT_MAX;
+        int nearest_buggy_idx = -1, nearest_eta = INT_MAX, second_best_eta = INT_MAX;
         for (int j = 0; j < fleet_count; ++j) {
             if (fleet[j].status != STATUS_AVAILABLE ||
                 fleet[j].capacity < request->passengers) continue;
@@ -132,9 +134,14 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
             if (!route) continue;
             int eta = route->total_time_s;
             free_route(route);
-            if (eta < 0 || eta >= nearest_eta) continue;
-            nearest_eta = eta;
-            nearest_buggy_idx = j;
+            if (eta < 0) continue;
+            if (eta < nearest_eta) {
+                second_best_eta = nearest_eta;
+                nearest_eta = eta;
+                nearest_buggy_idx = j;
+            } else if (eta < second_best_eta) {
+                second_best_eta = eta;
+            }
         }
         if (nearest_buggy_idx < 0) continue;
 
@@ -149,6 +156,11 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
         int total_duration = nearest_eta + trip_time;
         double priority = compute_priority(request, urgency_weight,
                                            aging_weight, current_time);
+        if (regret_mode) {
+            double regret = (second_best_eta == INT_MAX)
+                                ? 300.0 : (double)(second_best_eta - nearest_eta);
+            priority += 0.15 * regret;
+        }
         if (best_request_idx == -1 ||
             (shortest_mode && total_duration < shortest_total_duration) ||
             (!shortest_mode && priority > highest_priority)) {

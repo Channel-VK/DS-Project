@@ -14,11 +14,19 @@ typedef struct {       /* edge declaration */
     int bidirectional;   /* 1 = true, 0 = false */
 } Edge;
 
+typedef struct AdjNode {
+    int to_index;
+    int distance_m;
+    int avg_time_s;
+    struct AdjNode *next;
+} AdjNode;
+
 typedef struct {
     Node* nodes;
     int node_count;
     Edge* edges;
     int edge_count;
+    AdjNode **adj_list;
 } Graph;
 
 typedef struct {
