@@ -1,8 +1,8 @@
 # CampusBuggyDispatch: Campus Electric-Buggy Routing & Dispatch
 
-## Project by: [Team Name]
+## Project by: Debuggers
 
-**Course / Project:** Data Structures Project  
+**Course / Project:** Data Structures CSLR31 Project  
 **Language:** C
 
 ---
@@ -595,9 +595,8 @@ We acknowledge the course instructor and teaching assistants for their guidance 
 
 For questions, issues or contributions, contact the project team or open an issue in the project's GitHub repository.
 
-- **Team name:** [Add team name]
-- **Team members:** [Add names and roll numbers]
-- **GitHub repository:** [Add repository URL]
-- **Course / faculty:** [Add course and faculty details]
+- **Team name:** Debuggers
+- **Team members:** Krishnendu, Tharuni, Vishak
+
 
 ---
