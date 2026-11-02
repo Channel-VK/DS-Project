@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "cJSON.h"
 #include "outputwriter.h"
@@ -12,13 +13,28 @@ static double round1(double x) {
 int write_results_json(const char* path, const Metrics* m,
                        const RequestOutcome* outcomes, int outcome_count) {
     int i;
-    cJSON* root = cJSON_CreateObject();
-    cJSON* summary = cJSON_CreateObject();
-    cJSON* per_request = cJSON_CreateArray();
+    cJSON* root;
+    cJSON* summary;
+    cJSON* per_request;
     char* text;
     FILE* f;
 
-    if (!root || !summary || !per_request) return 0;
+    if (!path || !m || outcome_count < 0 || (outcome_count > 0 && !outcomes)) {
+        errno = EINVAL;
+        return 0;
+    }
+
+    root = cJSON_CreateObject();
+    summary = cJSON_CreateObject();
+    per_request = cJSON_CreateArray();
+
+    if (!root || !summary || !per_request) {
+        cJSON_Delete(root);
+        cJSON_Delete(summary);
+        cJSON_Delete(per_request);
+        errno = ENOMEM;
+        return 0;
+    }
 
     cJSON_AddItemToObject(root, "summary", summary);
     cJSON_AddStringToObject(summary, "algorithm", m->algorithm);
@@ -33,6 +49,11 @@ int write_results_json(const char* path, const Metrics* m,
     cJSON_AddItemToObject(root, "per_request", per_request);
     for (i = 0; i < outcome_count; i++) {
         cJSON* o = cJSON_CreateObject();
+        if (!o) {
+            cJSON_Delete(root);
+            errno = ENOMEM;
+            return 0;
+        }
         cJSON_AddStringToObject(o, "id", outcomes[i].request_id);
         cJSON_AddStringToObject(o, "assigned_buggy", outcomes[i].assigned_buggy);
         cJSON_AddNumberToObject(o, "wait_time_s", outcomes[i].wait_time_s);
@@ -42,13 +63,31 @@ int write_results_json(const char* path, const Metrics* m,
 
     text = cJSON_Print(root);
     cJSON_Delete(root);
-    if (!text) return 0;
+    if (!text) {
+        errno = ENOMEM;
+        return 0;
+    }
 
     f = fopen(path, "w");
-    if (!f) { free(text); return 0; }
-    fputs(text, f);
-    fputc('\n', f);
-    fclose(f);
+    if (!f) {
+        int err = errno ? errno : EIO;
+        free(text);
+        errno = err;
+        return 0;
+    }
+    if (fputs(text, f) == EOF || fputc('\n', f) == EOF || ferror(f)) {
+        int err = errno ? errno : EIO;
+        fclose(f);
+        free(text);
+        errno = err;
+        return 0;
+    }
+    if (fclose(f) != 0) {
+        int err = errno ? errno : EIO;
+        free(text);
+        errno = err;
+        return 0;
+    }
     free(text);
     return 1;
 }
@@ -56,8 +95,18 @@ int write_results_json(const char* path, const Metrics* m,
 int write_results_csv(const char* path, const Metrics* m,
                       const RequestOutcome* outcomes, int outcome_count) {
     int i;
-    FILE* f = fopen(path, "w");
-    if (!f) return 0;
+    FILE* f;
+
+    if (!path || !m || outcome_count < 0 || (outcome_count > 0 && !outcomes)) {
+        errno = EINVAL;
+        return 0;
+    }
+
+    f = fopen(path, "w");
+    if (!f) {
+        if (errno == 0) errno = EIO;
+        return 0;
+    }
 
     fprintf(f, "request_id,assigned_buggy,wait_time_s,eta_s\n");
     for (i = 0; i < outcome_count; i++) {
@@ -76,6 +125,15 @@ int write_results_csv(const char* path, const Metrics* m,
     fprintf(f, "avg_buggy_utilization_pct,%.1f\n",
             round1(m->avg_buggy_utilization_pct));
 
-    fclose(f);
+    if (ferror(f)) {
+        int err = errno ? errno : EIO;
+        fclose(f);
+        errno = err;
+        return 0;
+    }
+    if (fclose(f) != 0) {
+        if (errno == 0) errno = EIO;
+        return 0;
+    }
     return 1;
 }

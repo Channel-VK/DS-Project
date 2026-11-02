@@ -5,36 +5,54 @@
 #include <string.h>
 #include <float.h>
 #include <limits.h>
+#include <errno.h>
 
 static char* read_file_to_string(const char* filepath) {
+    if (!filepath) { errno = EINVAL; return NULL; }
     FILE* f = fopen(filepath, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    if (!f) { if (errno == 0) errno = EIO; return NULL; }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        int err = errno ? errno : EIO;
+        fclose(f);
+        errno = err;
+        return NULL;
+    }
     long length = ftell(f);
-    if (length < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+    if (length < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        int err = errno ? errno : EIO;
+        fclose(f);
+        errno = err;
+        return NULL;
+    }
     char* buffer = (char*)malloc((size_t)length + 1);
-    if (!buffer) { fclose(f); return NULL; }
+    if (!buffer) { fclose(f); errno = ENOMEM; return NULL; }
     size_t read_bytes = fread(buffer, 1, (size_t)length, f);
-    if (ferror(f)) { free(buffer); fclose(f); return NULL; }
+    if (read_bytes != (size_t)length || ferror(f)) {
+        int err = errno ? errno : EIO;
+        free(buffer);
+        fclose(f);
+        errno = err;
+        return NULL;
+    }
     buffer[read_bytes] = '\0';
     fclose(f);
     return buffer;
 }
 
 Buggy* load_fleet(const char* buggies_path, int* count_out) {
-    if (!buggies_path || !count_out) return NULL;
+    if (!buggies_path || !count_out) { errno = EINVAL; return NULL; }
     *count_out = 0;
     char* json_data = read_file_to_string(buggies_path);
     if (!json_data) return NULL;
     cJSON* root = cJSON_Parse(json_data);
     free(json_data);
-    if (!root) return NULL;
+    if (!root) { errno = EINVAL; return NULL; }
     cJSON* array = cJSON_GetObjectItemCaseSensitive(root, "buggies");
-    if (!cJSON_IsArray(array)) { cJSON_Delete(root); return NULL; }
+    if (!cJSON_IsArray(array)) { cJSON_Delete(root); errno = EINVAL; return NULL; }
     int count = cJSON_GetArraySize(array);
-    if (count <= 0) { cJSON_Delete(root); return NULL; }
+    if (count <= 0) { cJSON_Delete(root); errno = EINVAL; return NULL; }
     Buggy* fleet = (Buggy*)calloc((size_t)count, sizeof(Buggy));
-    if (!fleet) { cJSON_Delete(root); return NULL; }
+    if (!fleet) { cJSON_Delete(root); errno = ENOMEM; return NULL; }
     for (int i = 0; i < count; ++i) {
         cJSON* item = cJSON_GetArrayItem(array, i);
         if (!item) continue;
@@ -58,19 +76,19 @@ Buggy* load_fleet(const char* buggies_path, int* count_out) {
 }
 
 Request* load_requests(const char* requests_path, int* count_out) {
-    if (!requests_path || !count_out) return NULL;
+    if (!requests_path || !count_out) { errno = EINVAL; return NULL; }
     *count_out = 0;
     char* json_data = read_file_to_string(requests_path);
     if (!json_data) return NULL;
     cJSON* root = cJSON_Parse(json_data);
     free(json_data);
-    if (!root) return NULL;
+    if (!root) { errno = EINVAL; return NULL; }
     cJSON* array = cJSON_GetObjectItemCaseSensitive(root, "requests");
-    if (!cJSON_IsArray(array)) { cJSON_Delete(root); return NULL; }
+    if (!cJSON_IsArray(array)) { cJSON_Delete(root); errno = EINVAL; return NULL; }
     int count = cJSON_GetArraySize(array);
-    if (count <= 0) { cJSON_Delete(root); return NULL; }
+    if (count <= 0) { cJSON_Delete(root); errno = EINVAL; return NULL; }
     Request* requests = (Request*)calloc((size_t)count, sizeof(Request));
-    if (!requests) { cJSON_Delete(root); return NULL; }
+    if (!requests) { cJSON_Delete(root); errno = ENOMEM; return NULL; }
     for (int i = 0; i < count; ++i) {
         cJSON* item = cJSON_GetArrayItem(array, i);
         if (!item) continue;
@@ -94,12 +112,21 @@ Request* load_requests(const char* requests_path, int* count_out) {
     return requests;
 }
 
-void free_fleet(Buggy* fleet) { free(fleet); }
-void free_requests(Request* requests) { free(requests); }
+void free_fleet(Buggy* fleet) {
+    int saved_errno = errno;
+    free(fleet);
+    errno = saved_errno;
+}
+
+void free_requests(Request* requests) {
+    int saved_errno = errno;
+    free(requests);
+    errno = saved_errno;
+}
 
 double compute_priority(Request* r, double urgency_weight,
                         double aging_weight, int current_time) {
-    if (!r) return 0.0;
+    if (!r) { errno = EINVAL; return 0.0; }
     int wait_time = current_time - r->request_time;
     if (wait_time < 0) wait_time = 0;
     return urgency_weight * r->urgency + aging_weight * (double)wait_time;
@@ -112,8 +139,10 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
                                    int max_simulation_time, const char* algorithm) {
     AssignmentResult result;
     memset(&result, 0, sizeof(result));
-    if (!fleet || fleet_count <= 0 || !pending || pending_count <= 0 || !g)
+    if (!fleet || fleet_count <= 0 || !pending || pending_count <= 0 || !g) {
+        errno = EINVAL;
         return result;
+    }
 
     int best_request_idx = -1, best_buggy_idx = -1, best_eta = INT_MAX;
     double highest_priority = -DBL_MAX;

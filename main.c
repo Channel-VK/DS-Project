@@ -2,28 +2,76 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <errno.h>
 
 #include "GraphRouting/graph.h"
 #include "Dispatch/dispatch.h"
 #include "Output/outputwriter.h"
 #include "lib/cJSON.h"
 
+#ifndef ENAMETOOLONG
+#define ENAMETOOLONG ERANGE
+#endif
 
 #define DEFAULT_URGENCY_WEIGHT   1.0
 #define DEFAULT_AGING_WEIGHT     0.5
 #define DEFAULT_TIME_STEP_S      10
 #define DEFAULT_MAX_TIME_S       1800
 
+typedef enum {
+    ERR_OK = 0,
+    ERR_PATH_TOO_LONG = 1,
+    ERR_CONFIG_READ = 2,
+    ERR_CONFIG_PARSE = 3,
+    ERR_CONFIG_INVALID = 4,
+    ERR_GRAPH_LOAD = 5,
+    ERR_FLEET_LOAD = 6,
+    ERR_REQUESTS_LOAD = 7,
+    ERR_OUT_OF_MEMORY = 8,
+    ERR_UNKNOWN_BUGGY = 9,
+    ERR_UNKNOWN_REQUEST = 10,
+    ERR_RESULTS_WRITE = 11
+} ErrorCode;
+
+static const char *error_message(ErrorCode code) {
+    switch (code) {
+        case ERR_OK:              return "success";
+        case ERR_PATH_TOO_LONG:   return "scenario or results path is too long";
+        case ERR_CONFIG_READ:     return "could not read config file";
+        case ERR_CONFIG_PARSE:    return "config file is not valid JSON object data";
+        case ERR_CONFIG_INVALID:  return "invalid simulation configuration values";
+        case ERR_GRAPH_LOAD:      return "failed to load campus graph";
+        case ERR_FLEET_LOAD:      return "failed to load buggy fleet";
+        case ERR_REQUESTS_LOAD:   return "failed to load requests";
+        case ERR_OUT_OF_MEMORY:   return "out of memory while preparing simulation";
+        case ERR_UNKNOWN_BUGGY:   return "dispatch returned unknown buggy";
+        case ERR_UNKNOWN_REQUEST: return "dispatch returned unknown request";
+        case ERR_RESULTS_WRITE:   return "failed to write results";
+        default:                  return "unknown error";
+    }
+}
+
 static void make_path(char *destination, size_t size,
                       const char *directory, const char *filename) {
     int n;
     size_t length;
-    if (!destination || size == 0 || !directory || !filename) return;
+    if (!destination || size == 0) {
+        errno = EINVAL;
+        return;
+    }
+    destination[0] = '\0';
+    if (!directory || !filename) {
+        errno = EINVAL;
+        return;
+    }
     length = strlen(directory);
     n = snprintf(destination, size, "%s%s%s", directory,
                  (length > 0 && (directory[length - 1] == '/' || directory[length - 1] == '\\')) ? "" : "/",
                  filename);
-    if (n < 0 || (size_t)n >= size) destination[0] = '\0';
+    if (n < 0 || (size_t)n >= size) {
+        destination[0] = '\0';
+        errno = ENAMETOOLONG;
+    }
 }
 
 /* Configuration fields used by the simulation driver. */
@@ -37,35 +85,78 @@ typedef struct {
     int max_simulation_time_s;
 } SimulationConfig;
 
+typedef struct {
+    Graph *graph;
+    Buggy *fleet;
+    Request *requests;
+    int fleet_count;
+    int request_count;
+    int *busy_until;
+    int *destination_after_trip;
+    int *offline;
+    double *busy_seconds;
+    RequestOutcome *outcomes;
+} SimulationState;
+
+static void free_simulation_state(SimulationState *sim) {
+    int saved_errno = errno;
+    if (!sim) return;
+    free(sim->busy_until);
+    free(sim->destination_after_trip);
+    free(sim->offline);
+    free(sim->busy_seconds);
+    free(sim->outcomes);
+    free_requests(sim->requests);
+    free_fleet(sim->fleet);
+    free_graph(sim->graph);
+    memset(sim, 0, sizeof(*sim));
+    errno = saved_errno;
+}
+
 static char *read_file(const char *path) {
     FILE *file;
     long length;
     size_t bytes_read;
     char *buffer;
 
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+
     file = fopen(path, "rb");
-    if (!file) return NULL;
+    if (!file) {
+        if (errno == 0) errno = EIO;
+        return NULL;
+    }
 
     if (fseek(file, 0, SEEK_END) != 0) {
+        int err = errno ? errno : EIO;
         fclose(file);
+        errno = err;
         return NULL;
     }
     length = ftell(file);
     if (length < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        int err = errno ? errno : EIO;
         fclose(file);
+        errno = err;
         return NULL;
     }
 
     buffer = (char *)malloc((size_t)length + 1);
     if (!buffer) {
         fclose(file);
+        errno = ENOMEM;
         return NULL;
     }
 
     bytes_read = fread(buffer, 1, (size_t)length, file);
-    if (ferror(file)) {
+    if (bytes_read != (size_t)length || ferror(file)) {
+        int err = errno ? errno : EIO;
         free(buffer);
         fclose(file);
+        errno = err;
         return NULL;
     }
     buffer[bytes_read] = '\0';
@@ -88,21 +179,26 @@ static double get_json_number(cJSON *object, const char *key, double fallback) {
     return cJSON_IsNumber(item) ? item->valuedouble : fallback;
 }
 
-static int load_config(const char *path, SimulationConfig *config) {
-    char *json_text = read_file(path);
+static ErrorCode load_config(const char *path, SimulationConfig *config) {
+    char *json_text;
     cJSON *root;
 
+    if (!path || !config) {
+        errno = EINVAL;
+        return ERR_CONFIG_INVALID;
+    }
+
+    json_text = read_file(path);
     if (!json_text) {
-        fprintf(stderr, "Error: could not read config file '%s'.\n", path);
-        return 0;
+        return ERR_CONFIG_READ;
     }
 
     root = cJSON_Parse(json_text);
     free(json_text);
     if (!root || !cJSON_IsObject(root)) {
-        fprintf(stderr, "Error: '%s' is not valid JSON object data.\n", path);
         cJSON_Delete(root);
-        return 0;
+        errno = EINVAL;
+        return ERR_CONFIG_PARSE;
     }
 
     copy_json_string(root, "algorithm", config->algorithm,
@@ -123,15 +219,15 @@ static int load_config(const char *path, SimulationConfig *config) {
     cJSON_Delete(root);
 
     if (config->time_step_s <= 0 || config->max_simulation_time_s <= 0) {
-        fprintf(stderr, "Error: time_step_s and max_simulation_time_s must be positive.\n");
-        return 0;
+        errno = EINVAL;
+        return ERR_CONFIG_INVALID;
     }
     if (strcmp(config->output_format, "json") != 0 &&
         strcmp(config->output_format, "csv") != 0) {
-        fprintf(stderr, "Error: output_format must be 'json' or 'csv'.\n");
-        return 0;
+        errno = EINVAL;
+        return ERR_CONFIG_INVALID;
     }
-    return 1;
+    return ERR_OK;
 }
 
 /* Classify structural feasibility, not whether there is enough time left at
@@ -190,22 +286,13 @@ static int is_on_route_corridor(const Route *route, int pickup_id, int dropoff_i
     return 0;
 }
 
-int main(int argc, char *argv[]) {
+static ErrorCode run_simulation(const char *data_dir) {
     SimulationConfig config;
-    Graph *graph = NULL;
-    Buggy *fleet = NULL;
-    Request *requests = NULL;
-    int fleet_count = 0;
-    int request_count = 0;
-    int *busy_until = NULL;
-    int *destination_after_trip = NULL;
-    int *offline = NULL;
-    double *busy_seconds = NULL;
-    RequestOutcome *outcomes = NULL;
+    SimulationState sim;
+    ErrorCode err;
     int served = 0;
     int current_time;
     int i;
-    int success = EXIT_FAILURE;
     Metrics metrics;
     char output_path[512];
     char config_path[512];
@@ -213,26 +300,15 @@ int main(int argc, char *argv[]) {
     char edges_path[512];
     char buggies_path[512];
     char requests_path[512];
-    const char *data_dir = "Data";
-
-/*
- * Some launch environments pass the executable path as an argument.
- * Skip that path and use the first actual scenario directory instead.
- */
-for (int argi = 1; argi < argc; ++argi) {
-    if (argv[argi] == NULL || argv[argi][0] == '\0') {
-        continue;
-    }
-
-    if (strstr(argv[argi], "buggy_dispatch.exe") != NULL) {
-        continue;
-    }
-
-    data_dir = argv[argi];
-    break;
-}
 
     memset(&config, 0, sizeof(config));
+    memset(&sim, 0, sizeof(sim));
+
+    if (!data_dir || !data_dir[0]) {
+        errno = EINVAL;
+        return ERR_CONFIG_INVALID;
+    }
+
     make_path(config_path, sizeof(config_path), data_dir, "simulation_config.json");
     make_path(nodes_path, sizeof(nodes_path), data_dir, "campus_nodes.json");
     make_path(edges_path, sizeof(edges_path), data_dir, "campus_edges.json");
@@ -240,46 +316,52 @@ for (int argi = 1; argi < argc; ++argi) {
     make_path(requests_path, sizeof(requests_path), data_dir, "requests.json");
     if (!config_path[0] || !nodes_path[0] || !edges_path[0] ||
         !buggies_path[0] || !requests_path[0]) {
-        fprintf(stderr, "Error: scenario path is too long.\n");
-        goto cleanup;
+        errno = ENAMETOOLONG;
+        return ERR_PATH_TOO_LONG;
     }
 
-    if (!load_config(config_path, &config)) goto cleanup;
-
-    graph = load_graph(nodes_path, edges_path);
-    if (!graph) {
-        fprintf(stderr, "Error: failed to load campus graph.\n");
-        goto cleanup;
+    err = load_config(config_path, &config);
+    if (err != ERR_OK) {
+        return err;
     }
 
-    fleet = load_fleet(buggies_path, &fleet_count);
-    if (!fleet || fleet_count <= 0) {
-        fprintf(stderr, "Error: failed to load buggy fleet.\n");
-        goto cleanup;
+    sim.graph = load_graph(nodes_path, edges_path);
+    if (!sim.graph) {
+        free_simulation_state(&sim);
+        return ERR_GRAPH_LOAD;
     }
 
-    requests = load_requests(requests_path, &request_count);
-    if (!requests || request_count < 0) {
-        fprintf(stderr, "Error: failed to load requests.\n");
-        goto cleanup;
+    sim.fleet = load_fleet(buggies_path, &sim.fleet_count);
+    if (!sim.fleet || sim.fleet_count <= 0) {
+        if (errno == 0) errno = EINVAL;
+        free_simulation_state(&sim);
+        return ERR_FLEET_LOAD;
     }
 
-    busy_until = (int *)calloc((size_t)fleet_count, sizeof(int));
-    destination_after_trip = (int *)calloc((size_t)fleet_count, sizeof(int));
-    offline = (int *)calloc((size_t)fleet_count, sizeof(int));
-    busy_seconds = (double *)calloc((size_t)fleet_count, sizeof(double));
-    outcomes = (RequestOutcome *)calloc((size_t)request_count, sizeof(RequestOutcome));
-    if (!busy_until || !destination_after_trip || !offline || !busy_seconds ||
-        (request_count > 0 && !outcomes)) {
-        fprintf(stderr, "Error: out of memory while preparing simulation.\n");
-        goto cleanup;
+    sim.requests = load_requests(requests_path, &sim.request_count);
+    if (!sim.requests || sim.request_count <= 0) {
+        if (errno == 0) errno = EINVAL;
+        free_simulation_state(&sim);
+        return ERR_REQUESTS_LOAD;
     }
 
-    for (i = 0; i < fleet_count; ++i) {
-        busy_until[i] = 0;
-        destination_after_trip[i] = fleet[i].current_location;
+    sim.busy_until = (int *)calloc((size_t)sim.fleet_count, sizeof(int));
+    sim.destination_after_trip = (int *)calloc((size_t)sim.fleet_count, sizeof(int));
+    sim.offline = (int *)calloc((size_t)sim.fleet_count, sizeof(int));
+    sim.busy_seconds = (double *)calloc((size_t)sim.fleet_count, sizeof(double));
+    sim.outcomes = (RequestOutcome *)calloc((size_t)sim.request_count, sizeof(RequestOutcome));
+    if (!sim.busy_until || !sim.destination_after_trip || !sim.offline || !sim.busy_seconds ||
+        (sim.request_count > 0 && !sim.outcomes)) {
+        errno = ENOMEM;
+        free_simulation_state(&sim);
+        return ERR_OUT_OF_MEMORY;
+    }
+
+    for (i = 0; i < sim.fleet_count; ++i) {
+        sim.busy_until[i] = 0;
+        sim.destination_after_trip[i] = sim.fleet[i].current_location;
         /* Preserve the JSON initial status: NOT_AVAILABLE means offline all run. */
-        offline[i] = (fleet[i].status != STATUS_AVAILABLE);
+        sim.offline[i] = (sim.fleet[i].status != STATUS_AVAILABLE);
     }
 
     /*
@@ -292,25 +374,25 @@ for (int argi = 1; argi < argc; ++argi) {
          current_time += config.time_step_s) {
 
         /* Release buggies whose trips have finished. */
-        for (i = 0; i < fleet_count; ++i) {
-            if (offline[i]) {
-                fleet[i].status = STATUS_NOT_AVAILABLE;
+        for (i = 0; i < sim.fleet_count; ++i) {
+            if (sim.offline[i]) {
+                sim.fleet[i].status = STATUS_NOT_AVAILABLE;
                 continue;
             }
-            if (busy_until[i] <= current_time) {
-                if (busy_until[i] > 0) {
-                    fleet[i].current_location = destination_after_trip[i];
+            if (sim.busy_until[i] <= current_time) {
+                if (sim.busy_until[i] > 0) {
+                    sim.fleet[i].current_location = sim.destination_after_trip[i];
                 }
-                fleet[i].status = STATUS_AVAILABLE;
+                sim.fleet[i].status = STATUS_AVAILABLE;
             } else {
-                fleet[i].status = STATUS_NOT_AVAILABLE;
+                sim.fleet[i].status = STATUS_NOT_AVAILABLE;
             }
         }
 
         /* Assign as many requests as possible during this simulation tick. */
         for (;;) {
             AssignmentResult assignment = run_dispatch_tick(
-                fleet, fleet_count, requests, request_count, graph,
+                sim.fleet, sim.fleet_count, sim.requests, sim.request_count, sim.graph,
                 current_time, config.urgency_weight, config.aging_weight,
                 config.max_simulation_time_s, config.algorithm);
             int buggy_index;
@@ -321,36 +403,34 @@ for (int argi = 1; argi < argc; ++argi) {
 
             if (!assignment.success) break;
 
-            buggy_index = find_buggy_index(fleet, fleet_count,
+            buggy_index = find_buggy_index(sim.fleet, sim.fleet_count,
                                            assignment.assigned_buggy);
             if (buggy_index < 0) {
-                fprintf(stderr, "Error: dispatch returned unknown buggy '%s'.\n",
-                        assignment.assigned_buggy);
-                goto cleanup;
+                errno = EINVAL;
+                free_simulation_state(&sim);
+                return ERR_UNKNOWN_BUGGY;
             }
 
-            for (i = 0; i < request_count; ++i) {
-                if (strcmp(requests[i].id, assignment.request_id) == 0) {
+            for (i = 0; i < sim.request_count; ++i) {
+                if (strcmp(sim.requests[i].id, assignment.request_id) == 0) {
                     request_index = i;
                     break;
                 }
             }
             if (request_index < 0) {
-                fprintf(stderr, "Error: dispatch returned unknown request '%s'.\n",
-                        assignment.request_id);
-                goto cleanup;
+                errno = EINVAL;
+                free_simulation_state(&sim);
+                return ERR_UNKNOWN_REQUEST;
             }
 
             /* ETA is from the buggy's current location to the pickup. */
-            trip_route = dijkstra(graph, requests[request_index].pickup,
-                                  requests[request_index].destination);
+            trip_route = dijkstra(sim.graph, sim.requests[request_index].pickup,
+                                  sim.requests[request_index].destination);
             if (!trip_route) {
-                fprintf(stderr, "Warning: no route for request %s; assignment skipped.\n",
-                        requests[request_index].id);
                 /* dispatch already marked this request assigned. Keep simulation consistent
                    by recording it as unserved rather than silently losing it. */
-                requests[request_index].assigned = 0;
-                fleet[buggy_index].status = STATUS_AVAILABLE;
+                sim.requests[request_index].assigned = 0;
+                sim.fleet[buggy_index].status = STATUS_AVAILABLE;
                 break;
             }
             trip_time = trip_route->total_time_s;
@@ -364,63 +444,63 @@ for (int argi = 1; argi < argc; ++argi) {
                    current_time,
                    assignment.request_id,
                    assignment.assigned_buggy,
-                   requests[request_index].pickup,
-                   requests[request_index].destination);
+                   sim.requests[request_index].pickup,
+                   sim.requests[request_index].destination);
             printf("Pickup ETA=%d s | Passenger trip=%d s | Busy total=%d s | Wait=%d s\n",
                    assignment.eta_s,
                    trip_time,
                    total_duration,
-                   (current_time + assignment.eta_s - requests[request_index].request_time) > 0
-                       ? (current_time + assignment.eta_s - requests[request_index].request_time)
+                   (current_time + assignment.eta_s - sim.requests[request_index].request_time) > 0
+                       ? (current_time + assignment.eta_s - sim.requests[request_index].request_time)
                        : 0);
 
             /* Final wait includes the time already waited plus travel to pickup. */
-            outcomes[served].wait_time_s = current_time + assignment.eta_s -
-                                           requests[request_index].request_time;
-            if (outcomes[served].wait_time_s < 0) outcomes[served].wait_time_s = 0;
-            outcomes[served].eta_s = assignment.eta_s;
-            snprintf(outcomes[served].request_id,
-                     sizeof(outcomes[served].request_id), "%s",
-                     requests[request_index].id);
-            snprintf(outcomes[served].assigned_buggy,
-                     sizeof(outcomes[served].assigned_buggy), "%s",
+            sim.outcomes[served].wait_time_s = current_time + assignment.eta_s -
+                                               sim.requests[request_index].request_time;
+            if (sim.outcomes[served].wait_time_s < 0) sim.outcomes[served].wait_time_s = 0;
+            sim.outcomes[served].eta_s = assignment.eta_s;
+            snprintf(sim.outcomes[served].request_id,
+                     sizeof(sim.outcomes[served].request_id), "%s",
+                     sim.requests[request_index].id);
+            snprintf(sim.outcomes[served].assigned_buggy,
+                     sizeof(sim.outcomes[served].assigned_buggy), "%s",
                      assignment.assigned_buggy);
             ++served;
 
-            int remaining_seats = fleet[buggy_index].capacity - requests[request_index].passengers;
-            for (int k = 0; remaining_seats > 0 && k < request_count; ++k) {
-                if (requests[k].assigned || requests[k].request_time > current_time) continue;
-                if (requests[k].passengers > remaining_seats ||
-                    !is_on_route_corridor(trip_route, requests[k].pickup, requests[k].destination))
+            int remaining_seats = sim.fleet[buggy_index].capacity - sim.requests[request_index].passengers;
+            for (int k = 0; remaining_seats > 0 && k < sim.request_count; ++k) {
+                if (sim.requests[k].assigned || sim.requests[k].request_time > current_time) continue;
+                if (sim.requests[k].passengers > remaining_seats ||
+                    !is_on_route_corridor(trip_route, sim.requests[k].pickup, sim.requests[k].destination))
                     continue;
-                Route *pickup_k = dijkstra(graph, fleet[buggy_index].current_location, requests[k].pickup);
-                Route *route_k = dijkstra(graph, requests[k].pickup, requests[k].destination);
+                Route *pickup_k = dijkstra(sim.graph, sim.fleet[buggy_index].current_location, sim.requests[k].pickup);
+                Route *route_k = dijkstra(sim.graph, sim.requests[k].pickup, sim.requests[k].destination);
                 int eta_k = pickup_k ? pickup_k->total_time_s : -1;
                 int trip_k = route_k ? route_k->total_time_s : -1;
                 free_route(pickup_k);
                 free_route(route_k);
                 if (eta_k < 0 || trip_k < 0 || current_time + eta_k + trip_k > config.max_simulation_time_s)
                     continue;
-                requests[k].assigned = 1;
-                remaining_seats -= requests[k].passengers;
-                outcomes[served].wait_time_s = current_time + eta_k - requests[k].request_time;
-                if (outcomes[served].wait_time_s < 0) outcomes[served].wait_time_s = 0;
-                outcomes[served].eta_s = eta_k;
-                snprintf(outcomes[served].request_id, sizeof(outcomes[served].request_id), "%s", requests[k].id);
-                snprintf(outcomes[served].assigned_buggy, sizeof(outcomes[served].assigned_buggy), "%s", assignment.assigned_buggy);
+                sim.requests[k].assigned = 1;
+                remaining_seats -= sim.requests[k].passengers;
+                sim.outcomes[served].wait_time_s = current_time + eta_k - sim.requests[k].request_time;
+                if (sim.outcomes[served].wait_time_s < 0) sim.outcomes[served].wait_time_s = 0;
+                sim.outcomes[served].eta_s = eta_k;
+                snprintf(sim.outcomes[served].request_id, sizeof(sim.outcomes[served].request_id), "%s", sim.requests[k].id);
+                snprintf(sim.outcomes[served].assigned_buggy, sizeof(sim.outcomes[served].assigned_buggy), "%s", assignment.assigned_buggy);
                 ++served;
             }
             free_route(trip_route);
 
-            busy_until[buggy_index] = current_time + total_duration;
-            destination_after_trip[buggy_index] = requests[request_index].destination;
-            fleet[buggy_index].status = STATUS_NOT_AVAILABLE;
+            sim.busy_until[buggy_index] = current_time + total_duration;
+            sim.destination_after_trip[buggy_index] = sim.requests[request_index].destination;
+            sim.fleet[buggy_index].status = STATUS_NOT_AVAILABLE;
 
             /* Utilization counts only busy time that falls inside the simulation window. */
             if (current_time < config.max_simulation_time_s) {
                 int available_window = config.max_simulation_time_s - current_time;
-                busy_seconds[buggy_index] += (double)(total_duration < available_window
-                                                         ? total_duration : available_window);
+                sim.busy_seconds[buggy_index] += (double)(total_duration < available_window
+                                                             ? total_duration : available_window);
             }
         }
     }
@@ -428,13 +508,13 @@ for (int argi = 1; argi < argc; ++argi) {
     memset(&metrics, 0, sizeof(metrics));
     metrics.algorithm = config.algorithm;
     metrics.routing = config.routing;
-    metrics.total_requests = request_count;
+    metrics.total_requests = sim.request_count;
     metrics.served = served;
-    metrics.unserved = request_count - served;
+    metrics.unserved = sim.request_count - served;
 
     if (served > 0) {
         double total_wait = 0.0;
-        for (i = 0; i < served; ++i) total_wait += outcomes[i].wait_time_s;
+        for (i = 0; i < served; ++i) total_wait += sim.outcomes[i].wait_time_s;
         metrics.avg_wait_time_s = total_wait / (double)served;
     }
 
@@ -442,15 +522,15 @@ for (int argi = 1; argi < argc; ++argi) {
         double total_busy = 0.0;
         int online_count = 0;
         double total_available_time;
-        for (i = 0; i < fleet_count; ++i) {
-            if (!offline[i]) {
-                total_busy += busy_seconds[i];
+        for (i = 0; i < sim.fleet_count; ++i) {
+            if (!sim.offline[i]) {
+                total_busy += sim.busy_seconds[i];
                 ++online_count;
             }
             printf("[UTILIZATION] Buggy=%s | Status=%s | Busy=%.0f s / %d s\n",
-                   fleet[i].id,
-                   offline[i] ? "OFFLINE" : "ONLINE",
-                   busy_seconds[i], config.max_simulation_time_s);
+                   sim.fleet[i].id,
+                   sim.offline[i] ? "OFFLINE" : "ONLINE",
+                   sim.busy_seconds[i], config.max_simulation_time_s);
         }
         total_available_time = (double)online_count *
                                (double)config.max_simulation_time_s;
@@ -464,18 +544,19 @@ for (int argi = 1; argi < argc; ++argi) {
               (strcmp(config.output_format, "csv") == 0)
                   ? "results.csv" : "results.json");
     if (!output_path[0]) {
-        fprintf(stderr, "Error: results path is too long.\n");
-        goto cleanup;
+        errno = ENAMETOOLONG;
+        free_simulation_state(&sim);
+        return ERR_PATH_TOO_LONG;
     }
     if (strcmp(config.output_format, "csv") == 0) {
-        if (!write_results_csv(output_path, &metrics, outcomes, served)) {
-            fprintf(stderr, "Error: failed to write results to '%s'.\n", output_path);
-            goto cleanup;
+        if (!write_results_csv(output_path, &metrics, sim.outcomes, served)) {
+            free_simulation_state(&sim);
+            return ERR_RESULTS_WRITE;
         }
     } else {
-        if (!write_results_json(output_path, &metrics, outcomes, served)) {
-            fprintf(stderr, "Error: failed to write results to '%s'.\n", output_path);
-            goto cleanup;
+        if (!write_results_json(output_path, &metrics, sim.outcomes, served)) {
+            free_simulation_state(&sim);
+            return ERR_RESULTS_WRITE;
         }
     }
 
@@ -483,13 +564,13 @@ for (int argi = 1; argi < argc; ++argi) {
         int feasible_but_waiting = 0;
         int infeasible_at_deadline = 0;
         int not_yet_arrived = 0;
-        for (i = 0; i < request_count; ++i) {
-            if (requests[i].assigned) continue;
+        for (i = 0; i < sim.request_count; ++i) {
+            if (sim.requests[i].assigned) continue;
 
-            if (requests[i].request_time >= config.max_simulation_time_s) {
+            if (sim.requests[i].request_time >= config.max_simulation_time_s) {
                 ++not_yet_arrived;
             } else if (request_structurally_feasible(
-                           fleet, offline, fleet_count, &requests[i], graph)) {
+                           sim.fleet, sim.offline, sim.fleet_count, &sim.requests[i], sim.graph)) {
                 ++feasible_but_waiting;
             } else {
                 ++infeasible_at_deadline;
@@ -499,23 +580,45 @@ for (int argi = 1; argi < argc; ++argi) {
         printf("Algorithm: %s\n", config.algorithm);
         printf("Simulation complete.\n");
         printf("Requests: %d | Assigned: %d | Unassigned: %d\n",
-               metrics.total_requests, served, request_count - served);
+               metrics.total_requests, served, sim.request_count - served);
         printf("Unserved breakdown: Structurally feasible but unserved: %d | Structurally infeasible: %d | Not yet arrived: %d\n",
                feasible_but_waiting, infeasible_at_deadline, not_yet_arrived);
     }
     printf("Average wait: %.1f s | Average buggy utilization: %.1f%%\n",
            metrics.avg_wait_time_s, metrics.avg_buggy_utilization_pct);
     printf("Results written to %s\n", output_path);
-    success = EXIT_SUCCESS;
 
-cleanup:
-    free(busy_until);
-    free(destination_after_trip);
-    free(offline);
-    free(busy_seconds);
-    free(outcomes);
-    free_requests(requests);
-    free_fleet(fleet);
-    free_graph(graph);
-    return success;
+    free_simulation_state(&sim);
+    return ERR_OK;
+}
+
+int main(int argc, char *argv[]) {
+    const char *data_dir = "Data";
+    ErrorCode err;
+
+    /*
+     * Some launch environments pass the executable path as an argument.
+     * Skip that path and use the first actual scenario directory instead.
+     */
+    for (int argi = 1; argi < argc; ++argi) {
+        if (argv[argi] == NULL || argv[argi][0] == '\0') {
+            continue;
+        }
+
+        if (strstr(argv[argi], "buggy_dispatch.exe") != NULL) {
+            continue;
+        }
+
+        data_dir = argv[argi];
+        break;
+    }
+
+    errno = 0;
+    err = run_simulation(data_dir);
+    if (err != ERR_OK) {
+        perror(error_message(err));
+        return (int)err;
+    }
+
+    return EXIT_SUCCESS;
 }

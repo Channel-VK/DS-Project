@@ -27,6 +27,8 @@ typedef struct {
     Edge* edges;
     int edge_count;
     AdjNode **adj_list;
+    int *hash_table;
+    int hash_size;
 } Graph;
 
 typedef struct {
