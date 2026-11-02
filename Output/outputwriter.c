@@ -5,9 +5,11 @@
 #include "cJSON.h"
 #include "outputwriter.h"
 
-/* Round to 1 decimal place (values here are never negative) */
 static double round1(double x) {
-    return (double)((long)(x * 10.0 + 0.5)) / 10.0;
+    if (x >= 0.0) {
+        return (double)((long long)(x * 10.0 + 0.5)) / 10.0;
+    }
+    return (double)((long long)(x * 10.0 - 0.5)) / 10.0;
 }
 
 int write_results_json(const char* path, const Metrics* m,
@@ -19,7 +21,8 @@ int write_results_json(const char* path, const Metrics* m,
     char* text;
     FILE* f;
 
-    if (!path || !m || outcome_count < 0 || (outcome_count > 0 && !outcomes)) {
+    if (!path || !m || !m->algorithm || !m->routing ||
+        outcome_count < 0 || (outcome_count > 0 && !outcomes)) {
         errno = EINVAL;
         return 0;
     }
@@ -97,7 +100,8 @@ int write_results_csv(const char* path, const Metrics* m,
     int i;
     FILE* f;
 
-    if (!path || !m || outcome_count < 0 || (outcome_count > 0 && !outcomes)) {
+    if (!path || !m || !m->algorithm || !m->routing ||
+        outcome_count < 0 || (outcome_count > 0 && !outcomes)) {
         errno = EINVAL;
         return 0;
     }

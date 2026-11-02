@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 #include <errno.h>
 
 #include "GraphRouting/graph.h"
@@ -218,7 +219,9 @@ static ErrorCode load_config(const char *path, SimulationConfig *config) {
 
     cJSON_Delete(root);
 
-    if (config->time_step_s <= 0 || config->max_simulation_time_s <= 0) {
+    if (config->time_step_s <= 0 || config->max_simulation_time_s <= 0 ||
+        isnan(config->urgency_weight) || isinf(config->urgency_weight) ||
+        isnan(config->aging_weight) || isinf(config->aging_weight)) {
         errno = EINVAL;
         return ERR_CONFIG_INVALID;
     }
@@ -239,6 +242,8 @@ static int request_structurally_feasible(const Buggy *fleet,
                                          const Request *request,
                                          Graph *graph) {
     int j;
+
+    if (!request || request->passengers <= 0) return 0;
 
     for (j = 0; j < fleet_count; ++j) {
         Route *pickup_route;
@@ -273,13 +278,44 @@ static int find_buggy_index(const Buggy *fleet, int fleet_count, const char *id)
     return -1;
 }
 
-static int is_on_route_corridor(const Route *route, int pickup_id, int dropoff_id) {
+static int is_zero_weight_connected(Graph *g, int from_id, int to_id) {
+    if (from_id == to_id) return 1;
+    if (!g) return 0;
+    Route *r = dijkstra(g, from_id, to_id);
+    if (!r) return 0;
+    int zero = (r->total_distance_m == 0 && r->total_time_s == 0);
+    free_route(r);
+    return zero;
+}
+
+static int is_on_route_corridor(Graph *g, const Route *route, const Route *route_k,
+                                int pickup_id, int dropoff_id) {
     int pickup_idx = -1;
-    if (!route) return 0;
+    if (!route || route->path_length <= 0) return 0;
     for (int i = 0; i < route->path_length; ++i) {
-        if (pickup_idx < 0 && route->path_node_ids[i] == pickup_id) {
-            pickup_idx = i;
-        } else if (pickup_idx >= 0 && route->path_node_ids[i] == dropoff_id) {
+        if (is_zero_weight_connected(g, route->path_node_ids[i], pickup_id)) {
+            if (pickup_idx < 0) pickup_idx = i;
+            if (route->path_length == 1 ||
+                (route->total_distance_m == 0 && route->total_time_s == 0)) {
+                return 1;
+            }
+            if (route_k) {
+                for (int m = i + 1; m < route->path_length; ++m) {
+                    int next_node = route->path_node_ids[m];
+                    if (is_zero_weight_connected(g, next_node, pickup_id)) {
+                        continue;
+                    }
+                    for (int j = 1; j < route_k->path_length; ++j) {
+                        if (is_zero_weight_connected(g, route_k->path_node_ids[j], next_node)) {
+                            return 1;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if (pickup_idx >= 0 &&
+            is_zero_weight_connected(g, route->path_node_ids[i], dropoff_id)) {
             return 1;
         }
     }
@@ -380,9 +416,7 @@ static ErrorCode run_simulation(const char *data_dir) {
                 continue;
             }
             if (sim.busy_until[i] <= current_time) {
-                if (sim.busy_until[i] > 0) {
-                    sim.fleet[i].current_location = sim.destination_after_trip[i];
-                }
+                sim.fleet[i].current_location = sim.destination_after_trip[i];
                 sim.fleet[i].status = STATUS_AVAILABLE;
             } else {
                 sim.fleet[i].status = STATUS_NOT_AVAILABLE;
@@ -400,6 +434,7 @@ static ErrorCode run_simulation(const char *data_dir) {
             Route *trip_route;
             int trip_time;
             int total_duration;
+            int final_destination;
 
             if (!assignment.success) break;
 
@@ -438,6 +473,7 @@ static ErrorCode run_simulation(const char *data_dir) {
 
             total_duration = assignment.eta_s + trip_time;
             if (total_duration < 0) total_duration = 0;
+            final_destination = sim.requests[request_index].destination;
 
             /* DEBUG: show exactly what each successful assignment costs. */
             printf("[ASSIGN] t=%d | Request=%s | Buggy=%s | Pickup=%d | Destination=%d | ",
@@ -468,21 +504,62 @@ static ErrorCode run_simulation(const char *data_dir) {
             ++served;
 
             int remaining_seats = sim.fleet[buggy_index].capacity - sim.requests[request_index].passengers;
+            Route *active_corridor = trip_route;
             for (int k = 0; remaining_seats > 0 && k < sim.request_count; ++k) {
-                if (sim.requests[k].assigned || sim.requests[k].request_time > current_time) continue;
-                if (sim.requests[k].passengers > remaining_seats ||
-                    !is_on_route_corridor(trip_route, sim.requests[k].pickup, sim.requests[k].destination))
+                if (sim.requests[k].assigned || sim.requests[k].passengers <= 0 ||
+                    sim.requests[k].request_time > current_time ||
+                    sim.requests[k].passengers > remaining_seats)
                     continue;
                 Route *pickup_k = dijkstra(sim.graph, sim.fleet[buggy_index].current_location, sim.requests[k].pickup);
+                Route *from_primary_k = dijkstra(sim.graph, sim.requests[request_index].pickup, sim.requests[k].pickup);
                 Route *route_k = dijkstra(sim.graph, sim.requests[k].pickup, sim.requests[k].destination);
                 int eta_k = pickup_k ? pickup_k->total_time_s : -1;
+                int via_primary_eta = (from_primary_k && from_primary_k->total_time_s >= 0 &&
+                                       assignment.eta_s <= INT_MAX - from_primary_k->total_time_s)
+                                          ? (assignment.eta_s + from_primary_k->total_time_s) : eta_k;
+                int effective_eta_k = (via_primary_eta > eta_k) ? via_primary_eta : eta_k;
                 int trip_k = route_k ? route_k->total_time_s : -1;
+                int on_corridor = is_on_route_corridor(sim.graph, trip_route, route_k,
+                                                       sim.requests[k].pickup,
+                                                       sim.requests[k].destination) ||
+                                  (active_corridor != trip_route &&
+                                   is_on_route_corridor(sim.graph, active_corridor, route_k,
+                                                        sim.requests[k].pickup,
+                                                        sim.requests[k].destination));
+                if (on_corridor && active_corridor != trip_route &&
+                    !is_on_route_corridor(sim.graph, trip_route, NULL,
+                                          sim.requests[k].pickup, sim.requests[k].destination) &&
+                    !is_on_route_corridor(sim.graph, active_corridor, NULL,
+                                          sim.requests[k].pickup, sim.requests[k].destination)) {
+                    int passes_final = 0;
+                    if (route_k) {
+                        for (int j = 0; j < route_k->path_length; ++j) {
+                            if (is_zero_weight_connected(sim.graph, route_k->path_node_ids[j], final_destination)) {
+                                passes_final = 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (!passes_final) on_corridor = 0;
+                }
                 free_route(pickup_k);
-                free_route(route_k);
-                if (eta_k < 0 || trip_k < 0 || current_time + eta_k + trip_k > config.max_simulation_time_s)
+                free_route(from_primary_k);
+                if (!on_corridor || eta_k < 0 || trip_k < 0 ||
+                    effective_eta_k > config.max_simulation_time_s - current_time ||
+                    trip_k > config.max_simulation_time_s - current_time - effective_eta_k) {
+                    free_route(route_k);
                     continue;
+                }
                 sim.requests[k].assigned = 1;
                 remaining_seats -= sim.requests[k].passengers;
+                if (effective_eta_k + trip_k > total_duration) {
+                    total_duration = effective_eta_k + trip_k;
+                    final_destination = sim.requests[k].destination;
+                    if (active_corridor != trip_route) free_route(active_corridor);
+                    active_corridor = route_k;
+                    route_k = NULL;
+                }
+                free_route(route_k);
                 sim.outcomes[served].wait_time_s = current_time + eta_k - sim.requests[k].request_time;
                 if (sim.outcomes[served].wait_time_s < 0) sim.outcomes[served].wait_time_s = 0;
                 sim.outcomes[served].eta_s = eta_k;
@@ -490,11 +567,17 @@ static ErrorCode run_simulation(const char *data_dir) {
                 snprintf(sim.outcomes[served].assigned_buggy, sizeof(sim.outcomes[served].assigned_buggy), "%s", assignment.assigned_buggy);
                 ++served;
             }
+            if (active_corridor != trip_route) free_route(active_corridor);
             free_route(trip_route);
 
             sim.busy_until[buggy_index] = current_time + total_duration;
-            sim.destination_after_trip[buggy_index] = sim.requests[request_index].destination;
-            sim.fleet[buggy_index].status = STATUS_NOT_AVAILABLE;
+            sim.destination_after_trip[buggy_index] = final_destination;
+            if (total_duration == 0) {
+                sim.fleet[buggy_index].current_location = final_destination;
+                sim.fleet[buggy_index].status = STATUS_AVAILABLE;
+            } else {
+                sim.fleet[buggy_index].status = STATUS_NOT_AVAILABLE;
+            }
 
             /* Utilization counts only busy time that falls inside the simulation window. */
             if (current_time < config.max_simulation_time_s) {

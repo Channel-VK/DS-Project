@@ -55,18 +55,32 @@ Buggy* load_fleet(const char* buggies_path, int* count_out) {
     if (!fleet) { cJSON_Delete(root); errno = ENOMEM; return NULL; }
     for (int i = 0; i < count; ++i) {
         cJSON* item = cJSON_GetArrayItem(array, i);
-        if (!item) continue;
+        if (!cJSON_IsObject(item)) {
+            free(fleet);
+            cJSON_Delete(root);
+            errno = EINVAL;
+            return NULL;
+        }
         cJSON* id = cJSON_GetObjectItemCaseSensitive(item, "id");
         cJSON* capacity = cJSON_GetObjectItemCaseSensitive(item, "capacity");
         cJSON* location = cJSON_GetObjectItemCaseSensitive(item, "current_location");
         cJSON* status = cJSON_GetObjectItemCaseSensitive(item, "status");
         cJSON* speed = cJSON_GetObjectItemCaseSensitive(item, "speed_mps");
-        if (cJSON_IsString(id) && id->valuestring)
-            snprintf(fleet[i].id, sizeof(fleet[i].id), "%s", id->valuestring);
-        if (cJSON_IsNumber(capacity)) fleet[i].capacity = capacity->valueint;
-        if (cJSON_IsNumber(location)) fleet[i].current_location = location->valueint;
-        fleet[i].status = (cJSON_IsString(status) && status->valuestring &&
-                           strcmp(status->valuestring, "AVAILABLE") == 0)
+        if (!cJSON_IsString(id) || !id->valuestring || !id->valuestring[0] ||
+            !cJSON_IsNumber(capacity) || capacity->valueint < 0 ||
+            !cJSON_IsNumber(location)) {
+            free(fleet);
+            cJSON_Delete(root);
+            errno = EINVAL;
+            return NULL;
+        }
+        snprintf(fleet[i].id, sizeof(fleet[i].id), "%s", id->valuestring);
+        fleet[i].capacity = capacity->valueint;
+        fleet[i].current_location = location->valueint;
+        fleet[i].status = ((cJSON_IsString(status) && status->valuestring &&
+                            strcmp(status->valuestring, "AVAILABLE") == 0) ||
+                           (cJSON_IsNumber(status) && status->valueint == STATUS_AVAILABLE) ||
+                           cJSON_IsTrue(status))
                               ? STATUS_AVAILABLE : STATUS_NOT_AVAILABLE;
         if (cJSON_IsNumber(speed)) fleet[i].speed_mps = speed->valuedouble;
     }
@@ -91,20 +105,33 @@ Request* load_requests(const char* requests_path, int* count_out) {
     if (!requests) { cJSON_Delete(root); errno = ENOMEM; return NULL; }
     for (int i = 0; i < count; ++i) {
         cJSON* item = cJSON_GetArrayItem(array, i);
-        if (!item) continue;
+        if (!cJSON_IsObject(item)) {
+            free(requests);
+            cJSON_Delete(root);
+            errno = EINVAL;
+            return NULL;
+        }
         cJSON* id = cJSON_GetObjectItemCaseSensitive(item, "id");
         cJSON* pickup = cJSON_GetObjectItemCaseSensitive(item, "pickup");
         cJSON* destination = cJSON_GetObjectItemCaseSensitive(item, "destination");
         cJSON* passengers = cJSON_GetObjectItemCaseSensitive(item, "passengers");
         cJSON* urgency = cJSON_GetObjectItemCaseSensitive(item, "urgency");
         cJSON* request_time = cJSON_GetObjectItemCaseSensitive(item, "request_time");
-        if (cJSON_IsString(id) && id->valuestring)
-            snprintf(requests[i].id, sizeof(requests[i].id), "%s", id->valuestring);
-        if (cJSON_IsNumber(pickup)) requests[i].pickup = pickup->valueint;
-        if (cJSON_IsNumber(destination)) requests[i].destination = destination->valueint;
-        if (cJSON_IsNumber(passengers)) requests[i].passengers = passengers->valueint;
-        if (cJSON_IsNumber(urgency)) requests[i].urgency = urgency->valueint;
-        if (cJSON_IsNumber(request_time)) requests[i].request_time = request_time->valueint;
+        if (!cJSON_IsString(id) || !id->valuestring || !id->valuestring[0] ||
+            !cJSON_IsNumber(pickup) || !cJSON_IsNumber(destination) ||
+            !cJSON_IsNumber(passengers) || passengers->valueint <= 0 ||
+            !cJSON_IsNumber(urgency) || !cJSON_IsNumber(request_time)) {
+            free(requests);
+            cJSON_Delete(root);
+            errno = EINVAL;
+            return NULL;
+        }
+        snprintf(requests[i].id, sizeof(requests[i].id), "%s", id->valuestring);
+        requests[i].pickup = pickup->valueint;
+        requests[i].destination = destination->valueint;
+        requests[i].passengers = passengers->valueint;
+        requests[i].urgency = urgency->valueint;
+        requests[i].request_time = request_time->valueint;
         requests[i].assigned = 0;
     }
     *count_out = count;
@@ -127,9 +154,9 @@ void free_requests(Request* requests) {
 double compute_priority(Request* r, double urgency_weight,
                         double aging_weight, int current_time) {
     if (!r) { errno = EINVAL; return 0.0; }
-    int wait_time = current_time - r->request_time;
-    if (wait_time < 0) wait_time = 0;
-    return urgency_weight * r->urgency + aging_weight * (double)wait_time;
+    double wait_time = (double)current_time - (double)r->request_time;
+    if (wait_time < 0.0) wait_time = 0.0;
+    return urgency_weight * (double)r->urgency + aging_weight * wait_time;
 }
 
 AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
@@ -139,7 +166,8 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
                                    int max_simulation_time, const char* algorithm) {
     AssignmentResult result;
     memset(&result, 0, sizeof(result));
-    if (!fleet || fleet_count <= 0 || !pending || pending_count <= 0 || !g) {
+    if (!fleet || fleet_count <= 0 || !pending || pending_count <= 0 || !g ||
+        current_time < 0 || max_simulation_time < 0) {
         errno = EINVAL;
         return result;
     }
@@ -153,20 +181,28 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
 
     for (int i = 0; i < pending_count; ++i) {
         Request* request = &pending[i];
-        if (request->assigned || request->request_time > current_time) continue;
+        if (request->assigned || request->passengers <= 0 ||
+            request->request_time > current_time) continue;
 
         int nearest_buggy_idx = -1, nearest_eta = INT_MAX, second_best_eta = INT_MAX;
+        int nearest_dist = INT_MAX, nearest_hops = INT_MAX;
         for (int j = 0; j < fleet_count; ++j) {
             if (fleet[j].status != STATUS_AVAILABLE ||
                 fleet[j].capacity < request->passengers) continue;
             Route* route = dijkstra(g, fleet[j].current_location, request->pickup);
             if (!route) continue;
             int eta = route->total_time_s;
+            int dist = route->total_distance_m;
+            int hops = route->path_length;
             free_route(route);
-            if (eta < 0) continue;
-            if (eta < nearest_eta) {
+            if (eta < 0 || dist < 0) continue;
+            if (eta < nearest_eta ||
+                (eta == nearest_eta && (dist < nearest_dist ||
+                                        (dist == nearest_dist && hops < nearest_hops)))) {
                 second_best_eta = nearest_eta;
                 nearest_eta = eta;
+                nearest_dist = dist;
+                nearest_hops = hops;
                 nearest_buggy_idx = j;
             } else if (eta < second_best_eta) {
                 second_best_eta = eta;
@@ -179,7 +215,8 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
         if (!trip_route) continue;
         int trip_time = trip_route->total_time_s;
         free_route(trip_route);
-        if (trip_time < 0 || current_time + nearest_eta + trip_time > max_simulation_time)
+        if (trip_time < 0 || nearest_eta > max_simulation_time - current_time ||
+            trip_time > max_simulation_time - current_time - nearest_eta)
             continue;
 
         int total_duration = nearest_eta + trip_time;
@@ -190,9 +227,17 @@ AssignmentResult run_dispatch_tick(Buggy* fleet, int fleet_count,
                                 ? 300.0 : (double)(second_best_eta - nearest_eta);
             priority += 0.15 * regret;
         }
-        if (best_request_idx == -1 ||
-            (shortest_mode && total_duration < shortest_total_duration) ||
-            (!shortest_mode && priority > highest_priority)) {
+        int better = 0;
+        if (best_request_idx == -1) {
+            better = 1;
+        } else if (shortest_mode) {
+            better = (total_duration < shortest_total_duration) ||
+                     (total_duration == shortest_total_duration && priority > highest_priority);
+        } else {
+            better = (priority > highest_priority) ||
+                     (priority == highest_priority && nearest_eta < best_eta);
+        }
+        if (better) {
             highest_priority = priority;
             shortest_total_duration = total_duration;
             best_request_idx = i;
